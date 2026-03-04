@@ -40,7 +40,7 @@ When debugging extraction failures, check in order:
    - `emissions`
    - `layovers`
    - `flight_numbers`
-   - `operated_by`, `aircraft`, `amenities`
+   - `operated_by`, `aircraft`, `amenities`, `fare_policy`
 
 ## 4. Change policy
 

@@ -25,6 +25,14 @@ class Layover:
 
 
 @dataclass
+class FarePolicy:
+    carry_on_included: bool | None = None
+    checked_bag_included: bool | None = None
+    changeable: bool | None = None
+    refundable: bool | None = None
+
+
+@dataclass
 class Flight:
     is_best: bool
     name: str
@@ -51,3 +59,4 @@ class Flight:
     operated_by: str | None = None
     aircraft: str | None = None
     amenities: list[str] = field(default_factory=list)
+    fare_policy: FarePolicy = field(default_factory=FarePolicy)

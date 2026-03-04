@@ -2,7 +2,7 @@ from .cookies_impl import Cookies
 from .core import get_flights_from_filter, get_flights
 from .filter import create_filter
 from .flights_impl import Airport, FlightData, Passengers, TFSData
-from .schema import Emissions, Flight, Layover, Result
+from .schema import Emissions, FarePolicy, Flight, Layover, Result
 from .search import search_airport
 
 __all__ = [
@@ -16,6 +16,7 @@ __all__ = [
     "Flight",
     "Emissions",
     "Layover",
+    "FarePolicy",
     "search_airport",
     "Cookies",
     "get_flights",

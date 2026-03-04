@@ -4,7 +4,7 @@ from typing import List, Literal, Optional
 
 from selectolax.lexbor import LexborHTMLParser, LexborNode
 
-from .schema import Emissions, Flight, Layover, Result
+from .schema import Emissions, FarePolicy, Flight, Layover, Result
 from .flights_impl import FlightData, Passengers
 from .filter import TFSData
 from .fallback_playwright import fallback_playwright_fetch
@@ -41,6 +41,7 @@ _SELF_TRANSFER_RE = re.compile(
 _TRAVEL_IMPACT_FLIGHT_RE = re.compile(
     r"(?:^|,)[A-Z]{3}-[A-Z]{3}-(?P<carrier>[A-Z0-9]{2,3})-(?P<flight>\d{1,4})-\d{8}"
 )
+_TEXT_FLIGHT_NUMBER_RE = re.compile(r"\b(?P<carrier>[A-Z0-9]{2,3})\s?(?P<flight>\d{1,4})\b")
 _LAYOVER_DURATION_AIRPORT_RE = re.compile(
     r"(?P<duration>\d+\s*hr(?:\s*\d+\s*min)?|\d+\s*min)\s+(?P<airport>[A-Z]{3})\b",
     re.IGNORECASE,
@@ -53,7 +54,16 @@ _OPERATED_BY_RE = re.compile(
     r"operated by (?P<name>[A-Za-z0-9&.,'()\- ]{2,80}?)(?:\s+\d+\s*hr|\s+\d+\s*min|[.,]|$)",
     re.IGNORECASE,
 )
-_AIRCRAFT_RE = re.compile(r"\b(?:Boeing|Airbus)\s*[A-Z0-9-]{2,}\b", re.IGNORECASE)
+_AIRCRAFT_RE = re.compile(
+    r"\b(?:Boeing|Airbus)\s*[A-Z0-9-]{2,}\b|\b(?:A|B)\d{3}(?:-\d{3})?\b|\bE\d{3}\b",
+    re.IGNORECASE,
+)
+_BAG_INCLUDED_RE = re.compile(r"(carry[- ]?on|checked bag).{0,24}(included|allowance)", re.IGNORECASE)
+_NO_BAG_RE = re.compile(r"(no|without).{0,16}(carry[- ]?on|checked bag)", re.IGNORECASE)
+_CHANGE_ALLOWED_RE = re.compile(r"(changes?|changeable).{0,16}(allowed|included|permitted)", re.IGNORECASE)
+_NO_CHANGE_RE = re.compile(r"(no changes?|changes? not allowed|non[- ]?changeable)", re.IGNORECASE)
+_REFUNDABLE_RE = re.compile(r"\brefundable\b", re.IGNORECASE)
+_NONREFUNDABLE_RE = re.compile(r"\bnon[- ]?refundable\b", re.IGNORECASE)
 
 
 def _duration_to_minutes(raw: str) -> int | None:
@@ -164,6 +174,14 @@ def _extract_flight_numbers(item: LexborNode) -> list[str]:
                 seen.add(code)
                 found.append(code)
 
+    route_text = _normalize_space(item.text(separator=" ", strip=True))
+    for match in _TEXT_FLIGHT_NUMBER_RE.finditer(route_text):
+        code = f"{match.group('carrier').upper()}{match.group('flight')}"
+        if code in seen:
+            continue
+        seen.add(code)
+        found.append(code)
+
     return found
 
 
@@ -263,8 +281,51 @@ def _extract_amenities(route_text: str) -> list[str]:
         amenities.append("legroom")
     if "meal" in normalized or "snack" in normalized:
         amenities.append("meal")
+    if "carry-on" in normalized or "carry on" in normalized:
+        amenities.append("carry-on")
+    if "checked bag" in normalized:
+        amenities.append("checked-bag")
 
     return amenities
+
+
+def _extract_fare_policy(route_text: str, aria_label: str) -> FarePolicy:
+    merged = _normalize_space(f"{route_text} {aria_label}")
+    merged_lower = merged.lower()
+
+    carry_on_included = None
+    checked_bag_included = None
+    changeable = None
+    refundable = None
+
+    if _NO_BAG_RE.search(merged):
+        if "carry-on" in merged_lower or "carry on" in merged_lower:
+            carry_on_included = False
+        if "checked bag" in merged_lower:
+            checked_bag_included = False
+
+    if _BAG_INCLUDED_RE.search(merged):
+        if "carry-on" in merged_lower or "carry on" in merged_lower:
+            carry_on_included = True
+        if "checked bag" in merged_lower:
+            checked_bag_included = True
+
+    if _NO_CHANGE_RE.search(merged):
+        changeable = False
+    elif _CHANGE_ALLOWED_RE.search(merged):
+        changeable = True
+
+    if _NONREFUNDABLE_RE.search(merged):
+        refundable = False
+    elif _REFUNDABLE_RE.search(merged):
+        refundable = True
+
+    return FarePolicy(
+        carry_on_included=carry_on_included,
+        checked_bag_included=checked_bag_included,
+        changeable=changeable,
+        refundable=refundable,
+    )
 
 
 def fetch(params: dict) -> Response:
@@ -416,6 +477,7 @@ def parse_response(
             operated_by = _extract_operated_by(route_text, aria_label)
             aircraft = _extract_aircraft(route_text, aria_label)
             amenities = _extract_amenities(route_text)
+            fare_policy = _extract_fare_policy(route_text, aria_label)
 
             flights.append(
                 {
@@ -444,6 +506,7 @@ def parse_response(
                     "operated_by": operated_by,
                     "aircraft": aircraft,
                     "amenities": amenities,
+                    "fare_policy": fare_policy,
                 }
             )
 
