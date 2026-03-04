@@ -66,10 +66,10 @@ _LAYOVER_FROM_ARIA_JA_RE = re.compile(
     re.IGNORECASE,
 )
 _OPERATED_BY_RE = re.compile(
-    r"operated by (?P<name>.+?)(?:\s+\d+\s*hr|\s+\d+\s*min|[.,]|$)",
+    r"operated by (?P<name>[A-Za-z0-9&.,'()\- ]{2,80}?)(?:\s+\d+\s*hr|\s+\d+\s*min|[.,]|$)",
     re.IGNORECASE,
 )
-_OPERATED_BY_JA_RE = re.compile(r"(?P<name>.+?)\s*が運航", re.IGNORECASE)
+_OPERATED_BY_JA_RE = re.compile(r"(?:。|\s)(?P<name>[^。]{2,80}?)\s*が運航")
 _AIRCRAFT_RE = re.compile(r"\b(?:Boeing|Airbus)\s*[A-Z0-9-]{2,}\b", re.IGNORECASE)
 
 
@@ -246,15 +246,30 @@ def _extract_layovers(
 
 
 def _extract_operated_by(route_text: str, aria_label: str) -> str | None:
+    def _normalize_operator(value: str | None) -> str | None:
+        if value is None:
+            return None
+
+        cleaned = _normalize_space(value)
+        if not cleaned:
+            return None
+        if len(cleaned) > 80:
+            return None
+        if re.search(r"\d{1,2}:\d{2}", cleaned):
+            return None
+        return cleaned
+
     merged = _normalize_space(f"{route_text} {aria_label}")
     match = _OPERATED_BY_RE.search(merged)
     if match:
-        return _normalize_space(match.group("name"))
+        normalized = _normalize_operator(match.group("name"))
+        if normalized:
+            return normalized
 
     match_ja = _OPERATED_BY_JA_RE.search(merged)
     if not match_ja:
         return None
-    return _normalize_space(match_ja.group("name"))
+    return _normalize_operator(match_ja.group("name"))
 
 
 def _extract_aircraft(route_text: str, aria_label: str) -> str | None:
