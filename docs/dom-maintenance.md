@@ -45,5 +45,5 @@ When debugging extraction failures, check in order:
 ## 4. Change policy
 
 - Keep extractor changes minimal and additive.
-- Do not remove existing locale patterns unless proven dead.
-- Re-run at least one Japanese and one English route after changes.
+- Keep runtime extraction in English-only format to reduce parser drift risk.
+- Re-run at least one representative English route after changes.

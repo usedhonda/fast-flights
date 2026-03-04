@@ -14,15 +14,10 @@ _DIRECT_KEYWORDS = (
     "nonstop",
     "non-stop",
     "direct",
-    "直行便",
-    "直行",
 )
 
 _STOP_PATTERNS = (
     re.compile(r"(?P<count>\d+)\s*stop(?:s)?", re.IGNORECASE),
-    re.compile(r"(?P<count>\d+)\s*か所経由"),
-    re.compile(r"(?P<count>\d+)\s*回乗り継ぎ"),
-    re.compile(r"(?P<count>\d+)\s*回経由"),
 )
 
 _ROUTE_CODE_RE = re.compile(r"\b([A-Z]{3})\b.*?[–-].*?\b([A-Z]{3})\b")
@@ -30,20 +25,17 @@ _EN_LEG_RE = re.compile(
     r"Leaves .*? at (?P<dep>.+?) and arrives .*? at (?P<arr>.+?)\.",
     re.IGNORECASE,
 )
-_JA_LEG_RE = re.compile(
-    r"[、 ](?P<dep>\d{1,2}:\d{2}).*?発、.*?[、 ](?P<arr>\d{1,2}:\d{2}).*?着"
-)
 _EMISSIONS_KG_RE = re.compile(r"(?P<kg>\d{2,4})\s*kg\s*CO2e", re.IGNORECASE)
 _EMISSIONS_DELTA_SIGNED_RE = re.compile(
-    r"(?P<delta>[+-]\d{1,3})%\s*(?:emissions|排出量)",
+    r"(?P<delta>[+-]\d{1,3})%\s*emissions",
     re.IGNORECASE,
 )
 _EMISSIONS_DELTA_UNSIGN_RE = re.compile(
-    r"(?P<delta>\d{1,3})%\s*(?P<label>less|more|lower|higher|少ない|多い)",
+    r"(?P<delta>\d{1,3})%\s*(?P<label>less|more|lower|higher)",
     re.IGNORECASE,
 )
 _SELF_TRANSFER_RE = re.compile(
-    r"self[- ]?transfer|separate(?:\s*&\s*self-transfer)?\s+tickets?|自分で乗り継ぎ|セルフトランスファー",
+    r"self[- ]?transfer|separate(?:\s*&\s*self-transfer)?\s+tickets?",
     re.IGNORECASE,
 )
 _TRAVEL_IMPACT_FLIGHT_RE = re.compile(
@@ -53,23 +45,14 @@ _LAYOVER_DURATION_AIRPORT_RE = re.compile(
     r"(?P<duration>\d+\s*hr(?:\s*\d+\s*min)?|\d+\s*min)\s+(?P<airport>[A-Z]{3})\b",
     re.IGNORECASE,
 )
-_LAYOVER_DURATION_AIRPORT_JA_RE = re.compile(
-    r"(?P<duration>\d+\s*時間(?:\s*\d+\s*分)?|\d+\s*分)\s*(?P<airport>[A-Z]{3})\b",
-    re.IGNORECASE,
-)
 _LAYOVER_FROM_ARIA_RE = re.compile(
     r"(?P<duration>\d+\s*hr(?:\s*\d+\s*min)?|\d+\s*min)\s+layover",
-    re.IGNORECASE,
-)
-_LAYOVER_FROM_ARIA_JA_RE = re.compile(
-    r"(?P<duration>\d+\s*時間(?:\s*\d+\s*分)?|\d+\s*分)\s*(?:乗り継ぎ|待ち時間)",
     re.IGNORECASE,
 )
 _OPERATED_BY_RE = re.compile(
     r"operated by (?P<name>[A-Za-z0-9&.,'()\- ]{2,80}?)(?:\s+\d+\s*hr|\s+\d+\s*min|[.,]|$)",
     re.IGNORECASE,
 )
-_OPERATED_BY_JA_RE = re.compile(r"(?:。|\s)(?P<name>[^。]{2,80}?)\s*が運航")
 _AIRCRAFT_RE = re.compile(r"\b(?:Boeing|Airbus)\s*[A-Z0-9-]{2,}\b", re.IGNORECASE)
 
 
@@ -79,8 +62,8 @@ def _duration_to_minutes(raw: str) -> int | None:
         return None
 
     lower = text.lower()
-    hr_match = re.search(r"(\d+)\s*(?:hr|hour|時間)", lower)
-    min_match = re.search(r"(\d+)\s*(?:min|minute|分)", lower)
+    hr_match = re.search(r"(\d+)\s*(?:hr|hour)", lower)
+    min_match = re.search(r"(\d+)\s*(?:min|minute)", lower)
     if not hr_match and not min_match:
         return None
 
@@ -127,11 +110,6 @@ def _extract_return_leg_times(raw_label: str) -> tuple[str | None, str | None]:
         dep, arr = english_legs[1]
         return _normalize_space(dep), _normalize_space(arr)
 
-    japanese_legs = _JA_LEG_RE.findall(label)
-    if len(japanese_legs) >= 2:
-        dep, arr = japanese_legs[1]
-        return _normalize_space(dep), _normalize_space(arr)
-
     return None, None
 
 
@@ -150,15 +128,11 @@ def _extract_emissions(route_text: str, aria_label: str) -> Emissions:
         if unsign_match:
             raw_delta = int(unsign_match.group("delta"))
             label = unsign_match.group("label").lower()
-            delta_percent = -raw_delta if label in {"less", "lower", "少ない"} else raw_delta
+            delta_percent = -raw_delta if label in {"less", "lower"} else raw_delta
 
     relative_label = None
     merged_lower = merged.lower()
-    if (
-        "avg emissions" in merged_lower
-        or "average emissions" in merged_lower
-        or "平均排出量" in merged
-    ):
+    if "avg emissions" in merged_lower or "average emissions" in merged_lower:
         relative_label = "average"
     elif delta_percent is not None:
         relative_label = "lower" if delta_percent < 0 else "higher"
@@ -205,13 +179,13 @@ def _extract_layovers(
     seen: set[tuple[str | None, str]] = set()
 
     stop_marker = re.search(
-        r"\b\d+\s*stop(?:s)?\b|\d+\s*回(?:の)?乗り継ぎ|\d+\s*か所経由",
+        r"\b\d+\s*stop(?:s)?\b",
         route,
         re.IGNORECASE,
     )
     if stop_marker:
         route_tail = route[stop_marker.end() :]
-        for pattern in (_LAYOVER_DURATION_AIRPORT_RE, _LAYOVER_DURATION_AIRPORT_JA_RE):
+        for pattern in (_LAYOVER_DURATION_AIRPORT_RE,):
             for match in pattern.finditer(route_tail):
                 duration_text = _normalize_space(match.group("duration"))
                 airport_code = match.group("airport")
@@ -227,7 +201,7 @@ def _extract_layovers(
                     )
                 )
 
-    for pattern in (_LAYOVER_FROM_ARIA_RE, _LAYOVER_FROM_ARIA_JA_RE):
+    for pattern in (_LAYOVER_FROM_ARIA_RE,):
         for match in pattern.finditer(aria):
             duration_text = _normalize_space(match.group("duration"))
             key = (None, duration_text)
@@ -266,10 +240,7 @@ def _extract_operated_by(route_text: str, aria_label: str) -> str | None:
         if normalized:
             return normalized
 
-    match_ja = _OPERATED_BY_JA_RE.search(merged)
-    if not match_ja:
-        return None
-    return _normalize_operator(match_ja.group("name"))
+    return None
 
 
 def _extract_aircraft(route_text: str, aria_label: str) -> str | None:
@@ -286,11 +257,11 @@ def _extract_amenities(route_text: str) -> list[str]:
 
     if "wifi" in normalized or "wi-fi" in normalized:
         amenities.append("wifi")
-    if "power outlet" in normalized or "usb" in normalized or "電源" in normalized:
+    if "power outlet" in normalized or "usb" in normalized:
         amenities.append("power")
-    if "legroom" in normalized or "足元" in normalized:
+    if "legroom" in normalized:
         amenities.append("legroom")
-    if "meal" in normalized or "snack" in normalized or "機内食" in normalized:
+    if "meal" in normalized or "snack" in normalized:
         amenities.append("meal")
 
     return amenities

@@ -78,6 +78,7 @@ Airport.TAIPEI
 ## What's new
 - `v2.0` – New (much more succinct) API, fallback support for Playwright serverless functions, and [documentation](https://aweirddev.github.io/flights)!
 - `v2.2` - Now supports **local playwright** for sending requests.
+- `v3.0` - Runtime parser simplified to English-only extraction paths.
 
 ## Cookies & consent
 The EU region is a bit tricky to solve for now, but the fallback support should be able to handle it.
