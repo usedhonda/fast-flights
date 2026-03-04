@@ -55,6 +55,13 @@ flight.duration
 flight.stops
 flight.delay?  # may not be present
 flight.price
+flight.self_transfer
+flight.emissions
+flight.layovers
+flight.flight_numbers
+flight.operated_by
+flight.aircraft
+flight.amenities
 ```
 
 **Useless enums**: Additionally, you can use the `Airport` enum to search for airports in code (as you type)! See `_generated_enum.py` in source.

@@ -1,9 +1,10 @@
 import re
+import urllib.parse
 from typing import List, Literal, Optional
 
 from selectolax.lexbor import LexborHTMLParser, LexborNode
 
-from .schema import Flight, Result
+from .schema import Emissions, Flight, Layover, Result
 from .flights_impl import FlightData, Passengers
 from .filter import TFSData
 from .fallback_playwright import fallback_playwright_fetch
@@ -32,6 +33,60 @@ _EN_LEG_RE = re.compile(
 _JA_LEG_RE = re.compile(
     r"[、 ](?P<dep>\d{1,2}:\d{2}).*?発、.*?[、 ](?P<arr>\d{1,2}:\d{2}).*?着"
 )
+_EMISSIONS_KG_RE = re.compile(r"(?P<kg>\d{2,4})\s*kg\s*CO2e", re.IGNORECASE)
+_EMISSIONS_DELTA_SIGNED_RE = re.compile(
+    r"(?P<delta>[+-]\d{1,3})%\s*(?:emissions|排出量)",
+    re.IGNORECASE,
+)
+_EMISSIONS_DELTA_UNSIGN_RE = re.compile(
+    r"(?P<delta>\d{1,3})%\s*(?P<label>less|more|lower|higher|少ない|多い)",
+    re.IGNORECASE,
+)
+_SELF_TRANSFER_RE = re.compile(
+    r"self[- ]?transfer|separate(?:\s*&\s*self-transfer)?\s+tickets?|自分で乗り継ぎ|セルフトランスファー",
+    re.IGNORECASE,
+)
+_TRAVEL_IMPACT_FLIGHT_RE = re.compile(
+    r"(?:^|,)[A-Z]{3}-[A-Z]{3}-(?P<carrier>[A-Z0-9]{2,3})-(?P<flight>\d{1,4})-\d{8}"
+)
+_LAYOVER_DURATION_AIRPORT_RE = re.compile(
+    r"(?P<duration>\d+\s*hr(?:\s*\d+\s*min)?|\d+\s*min)\s+(?P<airport>[A-Z]{3})\b",
+    re.IGNORECASE,
+)
+_LAYOVER_DURATION_AIRPORT_JA_RE = re.compile(
+    r"(?P<duration>\d+\s*時間(?:\s*\d+\s*分)?|\d+\s*分)\s*(?P<airport>[A-Z]{3})\b",
+    re.IGNORECASE,
+)
+_LAYOVER_FROM_ARIA_RE = re.compile(
+    r"(?P<duration>\d+\s*hr(?:\s*\d+\s*min)?|\d+\s*min)\s+layover",
+    re.IGNORECASE,
+)
+_LAYOVER_FROM_ARIA_JA_RE = re.compile(
+    r"(?P<duration>\d+\s*時間(?:\s*\d+\s*分)?|\d+\s*分)\s*(?:乗り継ぎ|待ち時間)",
+    re.IGNORECASE,
+)
+_OPERATED_BY_RE = re.compile(
+    r"operated by (?P<name>.+?)(?:\s+\d+\s*hr|\s+\d+\s*min|[.,]|$)",
+    re.IGNORECASE,
+)
+_OPERATED_BY_JA_RE = re.compile(r"(?P<name>.+?)\s*が運航", re.IGNORECASE)
+_AIRCRAFT_RE = re.compile(r"\b(?:Boeing|Airbus)\s*[A-Z0-9-]{2,}\b", re.IGNORECASE)
+
+
+def _duration_to_minutes(raw: str) -> int | None:
+    text = _normalize_space(raw)
+    if not text:
+        return None
+
+    lower = text.lower()
+    hr_match = re.search(r"(\d+)\s*(?:hr|hour|時間)", lower)
+    min_match = re.search(r"(\d+)\s*(?:min|minute|分)", lower)
+    if not hr_match and not min_match:
+        return None
+
+    hours = int(hr_match.group(1)) if hr_match else 0
+    minutes = int(min_match.group(1)) if min_match else 0
+    return hours * 60 + minutes
 
 
 def _normalize_space(value: str) -> str:
@@ -78,6 +133,152 @@ def _extract_return_leg_times(raw_label: str) -> tuple[str | None, str | None]:
         return _normalize_space(dep), _normalize_space(arr)
 
     return None, None
+
+
+def _extract_emissions(route_text: str, aria_label: str) -> Emissions:
+    merged = _normalize_space(f"{route_text} {aria_label}")
+    kg_match = _EMISSIONS_KG_RE.search(merged)
+
+    kg_co2e = int(kg_match.group("kg")) if kg_match else None
+    delta_percent = None
+
+    signed_match = _EMISSIONS_DELTA_SIGNED_RE.search(merged)
+    if signed_match:
+        delta_percent = int(signed_match.group("delta"))
+    else:
+        unsign_match = _EMISSIONS_DELTA_UNSIGN_RE.search(merged)
+        if unsign_match:
+            raw_delta = int(unsign_match.group("delta"))
+            label = unsign_match.group("label").lower()
+            delta_percent = -raw_delta if label in {"less", "lower", "少ない"} else raw_delta
+
+    relative_label = None
+    merged_lower = merged.lower()
+    if (
+        "avg emissions" in merged_lower
+        or "average emissions" in merged_lower
+        or "平均排出量" in merged
+    ):
+        relative_label = "average"
+    elif delta_percent is not None:
+        relative_label = "lower" if delta_percent < 0 else "higher"
+
+    return Emissions(
+        kg_co2e=kg_co2e,
+        delta_percent=delta_percent,
+        relative_label=relative_label,
+    )
+
+
+def _extract_flight_numbers(item: LexborNode) -> list[str]:
+    found: list[str] = []
+    seen: set[str] = set()
+
+    for node in item.css("*[data-travelimpactmodelwebsiteurl]"):
+        url = node.attributes.get("data-travelimpactmodelwebsiteurl", "")
+        if not url:
+            continue
+
+        parsed = urllib.parse.urlparse(url)
+        itinerary_values = urllib.parse.parse_qs(parsed.query).get("itinerary", [])
+        for itinerary in itinerary_values:
+            decoded = urllib.parse.unquote(itinerary)
+            for match in _TRAVEL_IMPACT_FLIGHT_RE.finditer(decoded):
+                code = f"{match.group('carrier')}{match.group('flight')}"
+                if code in seen:
+                    continue
+                seen.add(code)
+                found.append(code)
+
+    return found
+
+
+def _extract_layovers(
+    *, route_text: str, aria_label: str, stops: int | str
+) -> list[Layover]:
+    if not isinstance(stops, int) or stops <= 0:
+        return []
+
+    route = _normalize_space(route_text)
+    aria = _normalize_space(aria_label)
+    layovers: list[Layover] = []
+    seen: set[tuple[str | None, str]] = set()
+
+    stop_marker = re.search(
+        r"\b\d+\s*stop(?:s)?\b|\d+\s*回(?:の)?乗り継ぎ|\d+\s*か所経由",
+        route,
+        re.IGNORECASE,
+    )
+    if stop_marker:
+        route_tail = route[stop_marker.end() :]
+        for pattern in (_LAYOVER_DURATION_AIRPORT_RE, _LAYOVER_DURATION_AIRPORT_JA_RE):
+            for match in pattern.finditer(route_tail):
+                duration_text = _normalize_space(match.group("duration"))
+                airport_code = match.group("airport")
+                key = (airport_code, duration_text)
+                if key in seen:
+                    continue
+                seen.add(key)
+                layovers.append(
+                    Layover(
+                        airport_code=airport_code,
+                        duration_text=duration_text,
+                        duration_min=_duration_to_minutes(duration_text),
+                    )
+                )
+
+    for pattern in (_LAYOVER_FROM_ARIA_RE, _LAYOVER_FROM_ARIA_JA_RE):
+        for match in pattern.finditer(aria):
+            duration_text = _normalize_space(match.group("duration"))
+            key = (None, duration_text)
+            if key in seen:
+                continue
+            seen.add(key)
+            layovers.append(
+                Layover(
+                    airport_code=None,
+                    duration_text=duration_text,
+                    duration_min=_duration_to_minutes(duration_text),
+                )
+            )
+
+    return layovers
+
+
+def _extract_operated_by(route_text: str, aria_label: str) -> str | None:
+    merged = _normalize_space(f"{route_text} {aria_label}")
+    match = _OPERATED_BY_RE.search(merged)
+    if match:
+        return _normalize_space(match.group("name"))
+
+    match_ja = _OPERATED_BY_JA_RE.search(merged)
+    if not match_ja:
+        return None
+    return _normalize_space(match_ja.group("name"))
+
+
+def _extract_aircraft(route_text: str, aria_label: str) -> str | None:
+    merged = _normalize_space(f"{route_text} {aria_label}")
+    match = _AIRCRAFT_RE.search(merged)
+    if not match:
+        return None
+    return _normalize_space(match.group(0))
+
+
+def _extract_amenities(route_text: str) -> list[str]:
+    normalized = _normalize_space(route_text).lower()
+    amenities: list[str] = []
+
+    if "wifi" in normalized or "wi-fi" in normalized:
+        amenities.append("wifi")
+    if "power outlet" in normalized or "usb" in normalized or "電源" in normalized:
+        amenities.append("power")
+    if "legroom" in normalized or "足元" in normalized:
+        amenities.append("legroom")
+    if "meal" in normalized or "snack" in normalized or "機内食" in normalized:
+        amenities.append("meal")
+
+    return amenities
 
 
 def fetch(params: dict) -> Response:
@@ -214,6 +415,21 @@ def parse_response(
             )
             return_departure, return_arrival = _extract_return_leg_times(aria_label)
             return_leg_available = bool(return_departure and return_arrival)
+            self_transfer = bool(
+                _SELF_TRANSFER_RE.search(name)
+                or _SELF_TRANSFER_RE.search(route_text)
+                or _SELF_TRANSFER_RE.search(aria_label)
+            )
+            emissions = _extract_emissions(route_text, aria_label)
+            layovers = _extract_layovers(
+                route_text=route_text,
+                aria_label=aria_label,
+                stops=stops_fmt,
+            )
+            flight_numbers = _extract_flight_numbers(item)
+            operated_by = _extract_operated_by(route_text, aria_label)
+            aircraft = _extract_aircraft(route_text, aria_label)
+            amenities = _extract_amenities(route_text)
 
             flights.append(
                 {
@@ -235,6 +451,13 @@ def parse_response(
                     "return_origin_airport": destination_airport if return_leg_available else None,
                     "return_destination_airport": origin_airport if return_leg_available else None,
                     "return_leg_available": return_leg_available,
+                    "self_transfer": self_transfer,
+                    "emissions": emissions,
+                    "layovers": layovers,
+                    "flight_numbers": flight_numbers,
+                    "operated_by": operated_by,
+                    "aircraft": aircraft,
+                    "amenities": amenities,
                 }
             )
 

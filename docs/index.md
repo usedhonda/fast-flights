@@ -135,6 +135,8 @@ I have no idea what I wrote but... it worked! And here it is, `fast-flights`.
 
 Feel free to contribute! Though I won't be online that often, I'll try my best to answer all the whats, hows & WTFs.
 
+For parser drift handling, use [`dom-maintenance.md`](dom-maintenance.md).
+
 :heart: Acknowledgements:
 
 - @d2x made their first contribution in #7
@@ -144,4 +146,3 @@ Feel free to contribute! Though I won't be online that often, I'll try my best t
 - @NickJLange helped add a LICENSE file in #38
 - @Lim0H (#39) and @andreaiorio (#41) fixed `primp` client issues.
 - @kiinami (#43) added local Playwright support
-
