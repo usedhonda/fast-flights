@@ -18,6 +18,15 @@ class Flight:
     arrival: str
     arrival_time_ahead: str
     duration: str
-    stops: int
+    stops: int | str
     delay: Optional[str]
     price: str
+    origin_airport: str | None = None
+    destination_airport: str | None = None
+    return_departure: str | None = None
+    return_arrival: str | None = None
+    return_duration: str | None = None
+    return_stops: int | str | None = None
+    return_origin_airport: str | None = None
+    return_destination_airport: str | None = None
+    return_leg_available: bool = False

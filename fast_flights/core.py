@@ -1,3 +1,4 @@
+import re
 from typing import List, Literal, Optional
 
 from selectolax.lexbor import LexborHTMLParser, LexborNode
@@ -7,6 +8,76 @@ from .flights_impl import FlightData, Passengers
 from .filter import TFSData
 from .fallback_playwright import fallback_playwright_fetch
 from .primp import Client, Response
+
+_DIRECT_KEYWORDS = (
+    "nonstop",
+    "non-stop",
+    "direct",
+    "直行便",
+    "直行",
+)
+
+_STOP_PATTERNS = (
+    re.compile(r"(?P<count>\d+)\s*stop(?:s)?", re.IGNORECASE),
+    re.compile(r"(?P<count>\d+)\s*か所経由"),
+    re.compile(r"(?P<count>\d+)\s*回乗り継ぎ"),
+    re.compile(r"(?P<count>\d+)\s*回経由"),
+)
+
+_ROUTE_CODE_RE = re.compile(r"\b([A-Z]{3})\b.*?[–-].*?\b([A-Z]{3})\b")
+_EN_LEG_RE = re.compile(
+    r"Leaves .*? at (?P<dep>.+?) and arrives .*? at (?P<arr>.+?)\.",
+    re.IGNORECASE,
+)
+_JA_LEG_RE = re.compile(
+    r"[、 ](?P<dep>\d{1,2}:\d{2}).*?発、.*?[、 ](?P<arr>\d{1,2}:\d{2}).*?着"
+)
+
+
+def _normalize_space(value: str) -> str:
+    return " ".join(value.replace("\u202f", " ").replace("\xa0", " ").split())
+
+
+def _parse_stops(raw: str) -> int | str:
+    value = _normalize_space(raw).lower()
+    if not value:
+        return "Unknown"
+
+    if any(keyword in value for keyword in _DIRECT_KEYWORDS):
+        return 0
+
+    for pattern in _STOP_PATTERNS:
+        match = pattern.search(value)
+        if match:
+            return int(match.group("count"))
+
+    return "Unknown"
+
+
+def _extract_route_codes(raw: str) -> tuple[str | None, str | None]:
+    text = _normalize_space(raw)
+    match = _ROUTE_CODE_RE.search(text)
+    if not match:
+        return None, None
+    return match.group(1), match.group(2)
+
+
+def _extract_return_leg_times(raw_label: str) -> tuple[str | None, str | None]:
+    label = _normalize_space(raw_label)
+    if not label:
+        return None, None
+
+    english_legs = _EN_LEG_RE.findall(label)
+    if len(english_legs) >= 2:
+        dep, arr = english_legs[1]
+        return _normalize_space(dep), _normalize_space(arr)
+
+    japanese_legs = _JA_LEG_RE.findall(label)
+    if len(japanese_legs) >= 2:
+        dep, arr = japanese_legs[1]
+        return _normalize_space(dep), _normalize_space(arr)
+
+    return None, None
 
 
 def fetch(params: dict) -> Response:
@@ -131,11 +202,18 @@ def parse_response(
             # Get prices
             price = safe(item.css_first(".YMlIz.FpEdX")).text() or "0"
 
-            # Stops formatting
-            try:
-                stops_fmt = 0 if stops == "Nonstop" else int(stops.split(" ", 1)[0])
-            except ValueError:
-                stops_fmt = "Unknown"
+            stops_fmt = _parse_stops(stops)
+            route_text = item.text(separator=" ", strip=True)
+            origin_airport, destination_airport = _extract_route_codes(route_text)
+
+            label_node = item.css_first('div[role="link"][aria-label]')
+            aria_label = (
+                label_node.attributes.get("aria-label", "")
+                if label_node is not None
+                else ""
+            )
+            return_departure, return_arrival = _extract_return_leg_times(aria_label)
+            return_leg_available = bool(return_departure and return_arrival)
 
             flights.append(
                 {
@@ -148,6 +226,15 @@ def parse_response(
                     "stops": stops_fmt,
                     "delay": delay,
                     "price": price.replace(",", ""),
+                    "origin_airport": origin_airport,
+                    "destination_airport": destination_airport,
+                    "return_departure": return_departure,
+                    "return_arrival": return_arrival,
+                    "return_duration": None,
+                    "return_stops": None,
+                    "return_origin_airport": destination_airport if return_leg_available else None,
+                    "return_destination_airport": origin_airport if return_leg_available else None,
+                    "return_leg_available": return_leg_available,
                 }
             )
 
